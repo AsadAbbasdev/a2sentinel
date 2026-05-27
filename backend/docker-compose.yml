@@ -1,0 +1,89 @@
+version: "3.9"
+
+services:
+
+  # ─── A2 Sentinel API ──────────────────────────────────────────
+  api:
+    build: .
+    container_name: a2sentinel_api
+    ports:
+      - "8000:8000"
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app                    # hot reload in dev
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+    networks:
+      - a2sentinel_net
+
+  # ─── Celery Worker ────────────────────────────────────────────
+  worker:
+    build: .
+    container_name: a2sentinel_worker
+    env_file: .env
+    depends_on:
+      - redis
+      - db
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
+    restart: unless-stopped
+    networks:
+      - a2sentinel_net
+
+  # ─── PostgreSQL ───────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: a2sentinel_db
+    environment:
+      POSTGRES_DB: a2_sentinel
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - a2sentinel_net
+
+  # ─── Redis ────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: a2sentinel_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - a2sentinel_net
+
+  # ─── Flower (Celery Monitoring) ───────────────────────────────
+  flower:
+    image: mher/flower:2.0
+    container_name: a2sentinel_flower
+    command: celery flower --broker=redis://redis:6379/1 --port=5555
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+    networks:
+      - a2sentinel_net
+
+
+volumes:
+  postgres_data:
+
+networks:
+  a2sentinel_net:
+    driver: bridge
